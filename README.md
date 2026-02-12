@@ -275,7 +275,7 @@ pnpm dev
 ### Monitoring & Observability
 
 <div align="center">
-  <img width="100%" alt="PLUM Monitoring Diagram" src="https://github.com/user-attachments/assets/00d9f43c-d1e1-4cdd-a51e-e26b40f9564f" />
+<img width="1200" alt="image" src="https://github.com/user-attachments/assets/9ba9cbe6-8d58-412f-a2e9-70fe81694a9e" />
 </div>
 
 ### Project Structure
