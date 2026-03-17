@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Router, Worker, Producer } from 'mediasoup/node/lib/types';
-import { Mutex } from 'async-mutex';
 import {
   RoomType,
   RouterStrategy,
@@ -31,9 +30,9 @@ export class MultiRouterManagerService {
   // 참가자별 Router 매핑 (participantId -> routerIndex)
   private participantRouterMap: Map<string, Map<string, number>> = new Map();
 
-  // PipeProducer 생성할때 Race Condition 방지를 위한 Mutex Map
+  // PipeProducer 생성 중복 방지를 위한 Promise 캐시
   // Key: "producerId:targetRouterIndex"
-  private pipeProducerMutexes: Map<string, Mutex> = new Map();
+  private pipePromises: Map<string, Promise<Producer<ProducerAppData>>> = new Map();
 
   /**
    * Room 생성 시 Multi-Router 설정
@@ -274,7 +273,6 @@ export class MultiRouterManagerService {
     sourceRouterIndex: number,
     targetRouterIndex: number,
   ): Promise<Producer<ProducerAppData>> {
-    // 같은 Router면 파이프 불필요
     if (sourceRouterIndex === targetRouterIndex) {
       return producer;
     }
@@ -284,90 +282,55 @@ export class MultiRouterManagerService {
       throw new Error(`Room ${roomId}을 찾을 수 없습니다.`);
     }
 
-    const targetRouter = roomInfo.routers[targetRouterIndex];
+    const key = `${producer.id}:${targetRouterIndex}`;
 
-    // 1. 체크 (락 없이 - Fast Path)
-    // 이미 생성된 파이프는 즉시 반환 (대부분의 경우)
-    const existingPipe = this.findExistingPipe(roomInfo, producer.id, targetRouter);
-    if (existingPipe) {
-      this.logger.log(`✅ 기존 PipeProducer 재사용: ${producer.id} → Router #${targetRouterIndex}`);
-      return existingPipe.pipeProducer;
-    }
-
-    //  Mutex 획득 (파이프 생성이 필요한 경우만)
-    const lockKey = `${producer.id}:${targetRouterIndex}`;
-    if (!this.pipeProducerMutexes.has(lockKey)) {
-      this.pipeProducerMutexes.set(lockKey, new Mutex());
-    }
-    const mutex = this.pipeProducerMutexes.get(lockKey)!;
-    const release = await mutex.acquire();
-
-    try {
-      // 2. 체크 (락 내부 - Double Check)
-      // 락 대기 중 다른 요청이 이미 생성했을 수 있음
-      const existingPipe = this.findExistingPipe(roomInfo, producer.id, targetRouter);
-      if (existingPipe) {
-        this.logger.log(
-          `✅ 기존 PipeProducer 재사용 (락 대기 중 생성됨): ${producer.id} → Router #${targetRouterIndex}`,
-        );
-        return existingPipe.pipeProducer;
-      }
-
-      // 파이프 생성 (정말 없을 때만)
+    if (!this.pipePromises.has(key)) {
       this.logger.log(
         `🔗 On-Demand 파이프 생성 시작: Producer ${producer.id} → Router #${targetRouterIndex}`,
       );
 
+      const targetRouter = roomInfo.routers[targetRouterIndex];
       const sourceRouter = roomInfo.routers[sourceRouterIndex];
-      const { pipeProducer } = await sourceRouter.pipeToRouter({
-        producerId: producer.id,
-        router: targetRouter,
-      });
 
-      if (!pipeProducer) {
-        throw new Error('PipeProducer 생성 실패: pipeProducer가 undefined입니다.');
-      }
+      const promise = sourceRouter
+        .pipeToRouter({ producerId: producer.id, router: targetRouter })
+        .then(({ pipeProducer }) => {
+          if (!pipeProducer) {
+            throw new Error('PipeProducer 생성 실패: pipeProducer가 undefined입니다.');
+          }
 
-      const pipeInfo: PipeProducerInfo = {
-        targetRouter,
-        pipeProducer: pipeProducer as Producer<ProducerAppData>,
-        createdAt: new Date(),
-      };
+          const pipeInfo: PipeProducerInfo = {
+            targetRouter,
+            pipeProducer: pipeProducer as Producer<ProducerAppData>,
+            createdAt: new Date(),
+          };
 
-      // Map에 추가
-      if (!roomInfo.pipeProducers.has(producer.id)) {
-        roomInfo.pipeProducers.set(producer.id, []);
-      }
-      roomInfo.pipeProducers.get(producer.id)!.push(pipeInfo);
+          if (!roomInfo.pipeProducers.has(producer.id)) {
+            roomInfo.pipeProducers.set(producer.id, []);
+          }
+          roomInfo.pipeProducers.get(producer.id)!.push(pipeInfo);
 
-      this.logger.log(
-        `✅ On-Demand 파이프 생성 완료: Producer ${producer.id} → Router #${targetRouterIndex} (PipeProducer: ${pipeProducer.id})`,
-      );
+          this.logger.log(
+            `✅ On-Demand 파이프 생성 완료: Producer ${producer.id} → Router #${targetRouterIndex} (PipeProducer: ${pipeProducer.id})`,
+          );
 
-      return pipeProducer as Producer<ProducerAppData>;
-    } catch (error) {
-      this.logger.error(
-        `❌ On-Demand 파이프 실패: Producer ${producer.id} → Router #${targetRouterIndex}`,
-        error,
-      );
-      throw error;
-    } finally {
-      // Mutex 해제
-      release();
+          return pipeProducer as Producer<ProducerAppData>;
+        })
+        .catch((error) => {
+          this.pipePromises.delete(key);
+          this.logger.error(
+            `❌ On-Demand 파이프 실패: Producer ${producer.id} → Router #${targetRouterIndex}`,
+            error,
+          );
+          throw error;
+        });
+
+      this.pipePromises.set(key, promise);
+    } else {
+      this.logger.log(`✅ 기존 PipeProducer 재사용: ${producer.id} → Router #${targetRouterIndex}`);
     }
-  }
 
-  /**
-   * 기존 PipeProducer 찾기 (헬퍼 메서드)
-   * Double-Checked Locking에서 중복 코드 제거
-   */
-  private findExistingPipe(
-    roomInfo: MultiRouterRoomInfo,
-    producerId: string,
-    targetRouter: Router,
-  ): PipeProducerInfo | undefined {
-    const existingPipes = roomInfo.pipeProducers.get(producerId) || [];
-    return existingPipes.find((p) => p.targetRouter === targetRouter);
+    return this.pipePromises.get(key)!;
   }
 
   /**
@@ -425,6 +388,13 @@ export class MultiRouterManagerService {
 
     // Map에서 제거
     roomInfo.pipeProducers.delete(producerId);
+
+    // pipePromises 정리
+    for (const key of this.pipePromises.keys()) {
+      if (key.startsWith(`${producerId}:`)) {
+        this.pipePromises.delete(key);
+      }
+    }
 
     this.logger.log(
       `🧹 Producer ${producerId} PipeProducer 정리 완료: 성공 ${successCount}, 실패 ${failCount}`,
