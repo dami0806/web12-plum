@@ -1,20 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { SocketClient } from '@/shared/socket/socket';
-import { MediaConnectionService } from '@/mediasoup/mediaConnection.service';
-import { useSafeRoomId } from '@/shared/hooks/useSafeRoomId';
-import { roomApi } from '@/shared/api';
-import { logger } from '@/shared/lib/logger';
+import { useChatStore } from '@/feature/chat/stores/useChatStore';
+import { useMediaCleanup } from '@/feature/media/hooks/useMediaCleanup';
+import { useRemoteMedia } from '@/feature/media/hooks/useRemoteMedia';
+import { usePollStore } from '@/feature/poll/stores/usePollStore';
 
-import { useChatStore } from '../stores/useChatStore';
-import { usePollStore } from '../stores/usePollStore';
+import { roomApi } from '@/shared/api';
+import { useSafeRoomId } from '@/shared/hooks/useSafeRoomId';
+import { logger } from '@/shared/lib/logger';
+import { MediaConnectionService } from '@/shared/mediasoup/mediaConnection.service';
+import { SocketClient } from '@/shared/socket/client';
+
 import { useRoomStore } from '../stores/useRoomStore';
-import { useRoomEventHandlers } from './useRoomEventHandlers';
-import { useInteractionSync } from './useInteractionSync';
-import { useRemoteMedia } from './useRemoteMedia';
-import { useMediaCleanup } from './useMediaCleanup';
-import { useRoomJoin } from './useRoomJoin';
 import { useRoomUIStore } from '../stores/useRoomUIStore';
+import { useInteractionSync } from './useInteractionSync';
+import { useRoomEventHandlers } from './useRoomEventHandlers';
+import { useRoomJoin } from './useRoomJoin';
 
 /**
  * 방 입장 시 전체 초기화 파이프라인을 실행하는 훅
@@ -76,7 +77,7 @@ export function useRoomInit(handleInitialMedia: () => Promise<void>) {
 
       // 서버 URL 조회 및 소켓 연결
       const { data: serverData } = await roomApi.getRoomServer(roomId!);
-      await SocketClient.ensureConnected(serverData.serverUrl);
+      await SocketClient.connect(serverData.serverUrl);
 
       const rtpCapabilities = await joinRoom(roomId!, myInfo?.id || '');
 
@@ -84,7 +85,7 @@ export function useRoomInit(handleInitialMedia: () => Promise<void>) {
       await MediaConnectionService.initialize(rtpCapabilities);
 
       // 역할별 실시간 이벤트 핸들러 설정
-      await setupAllHandlers();
+      setupAllHandlers();
       await syncInteractionState(myInfo?.role ?? 'participant');
 
       // 기존 참가자 미디어 수신 및 내 미디어 송출 시작
@@ -135,6 +136,7 @@ export function useRoomInit(handleInitialMedia: () => Promise<void>) {
   useEffect(() => {
     return () => {
       cleanupMedia();
+      SocketClient.disconnect();
       chatActions.clear();
       pollActions.clear();
       roomActions.reset();

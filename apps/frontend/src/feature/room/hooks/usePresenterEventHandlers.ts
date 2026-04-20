@@ -1,14 +1,14 @@
 import { useCallback } from 'react';
 
-import { useToastStore } from '@/store/useToastStore';
+import { PollService } from '@/feature/poll/services/poll';
+import { usePollStore } from '@/feature/poll/stores/usePollStore';
+import { QnaService } from '@/feature/qna/services/qna';
+import { useQnaStore } from '@/feature/qna/stores/useQnaStore';
+import { useRankStore } from '@/feature/rank/stores/useRankStore';
 
-import { usePollStore } from '../stores/usePollStore';
-import { useQnaStore } from '../stores/useQnaStore';
-import { useRankStore } from '../stores/useRankStore';
+import { useToastStore } from '@/shared/stores/useToastStore';
 
-import { PollService } from '../service/poll';
-import { QnaService } from '../service/qna';
-import { InteractionService } from '../service/interaction';
+import { InteractionService } from '../services/interaction';
 
 /**
  * Presenter 전용 이벤트 핸들러
@@ -30,32 +30,28 @@ export function usePresenterEventHandlers() {
    * - Poll: 투표 상세 결과 수신 (모든 투표자 정보 포함)
    * - QnA: Q&A 상세 결과 수신 (모든 답변 정보 포함)
    * - Interaction: 랭킹 업데이트, 청중 제스처 토스트
-   *
-   * @returns 등록된 이벤트 핸들러의 Promise 배열
    */
-  const setupPresenterHandlers = useCallback((): Promise<void>[] => {
-    return [
-      PollService.setupPresenterEventHandlers({
-        onUpdatePollDetail: (data) => {
-          const updatedVoter = { ...data.voter, optionId: data.voter.optionId };
-          pollActions.updatePollDetail({ ...data, voter: updatedVoter });
-        },
-        onPollEndDetail: pollActions.setCompletedFromEndDetail,
-      }),
-      QnaService.setupPresenterEventHandlers({
-        onUpdateQnaDetail: qnaActions.updateQnaDetail,
-        onQnaEndDetail: qnaActions.setCompletedFromEndDetail,
-      }),
-      InteractionService.setupPresenterEventHandlers({
-        onPresenterRankUpdate: rankActions.updatePresenterRank,
-        onUpdateGestureStatus: (data) =>
-          toastActions.addToast({
-            type: 'gesture',
-            title: data.participantName,
-            gesture: data.gesture,
-          }),
-      }),
-    ];
+  const setupPresenterHandlers = useCallback((): void => {
+    PollService.setupPresenterEventHandlers({
+      onUpdatePollDetail: (data) => {
+        const updatedVoter = { ...data.voter, optionId: data.voter.optionId };
+        pollActions.updatePollDetail({ ...data, voter: updatedVoter });
+      },
+      onPollEndDetail: pollActions.setCompletedFromEndDetail,
+    });
+    QnaService.setupPresenterEventHandlers({
+      onUpdateQnaDetail: qnaActions.updateQnaDetail,
+      onQnaEndDetail: qnaActions.setCompletedFromEndDetail,
+    });
+    InteractionService.setupPresenterEventHandlers({
+      onPresenterRankUpdate: rankActions.updatePresenterRank,
+      onUpdateGestureStatus: (data) =>
+        toastActions.addToast({
+          type: 'gesture',
+          title: data.participantName,
+          gesture: data.gesture,
+        }),
+    });
   }, [pollActions, qnaActions, rankActions, toastActions]);
 
   /**
